@@ -1,47 +1,10 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 This script includes the local computations for single-shot ridge
 regression with decentralized statistic calculation
 
-Input : --run json
-        Note: This json structure may involve different
-                fields for different runs
-Output: json
-"""
-
-import argparse
-import json
-import numpy as np
-import sys
-import regression as reg
-
-
-def local_1(args, computation_phase):
-    """
-    Args:
-        args (dictionary) : {"input":
-                                {"covariates": ,
-                                 "dependents": ,
-                                 "lambda":
-                                },
-                            "cache": {}
-                            }
-
-        computation_phase () : ???
-
-    Returns:
-        computation_output : json
-
-    Description:
-        Step 1 : Generate the local beta_vector
-        Step 2 : Generate the local fit statistics
-                    r^2 : 1 - (SSE/SST)
-                    t   : beta/std.err(beta)
-                    p   : two-tailed p-value
-        Step 3 : Generate the mean_y_local and count_local
-
-    Example:
+Example:
         python local.py --run '{"input":
                                 {"covariates":
                                     [[2,3],[3,4],[7,8],[7,5],[9,8]],
@@ -51,6 +14,64 @@ def local_1(args, computation_phase):
                                 },
                             "cache":{}
                             }'
+"""
+import argparse
+import json
+import numpy as np
+import sys
+import regression as reg
+
+
+def local_1(args, computation_phase):
+    """Computes local beta vector and local fit statistics
+
+    Args:
+        args (dictionary) : {"input":
+                                {"covariates": ,
+                                 "dependents": ,
+                                 "lambda":
+                                },
+                            "cache": {}
+                            }
+
+        computation_phase (string) : Field specifying which part (local/
+                                     remote) of the decentralized computation
+                                     has been performed last
+                                     In this case, it has to be empty
+    Returns:
+        computation_output(json) : {
+                                        'output': {
+                                            'beta_vector_local': ,
+                                            'r_2_local': ,
+                                            'ts_local': ,
+                                            'ps_local': ,
+                                            'mean_y_local': ,
+                                            'count_local': ,
+                                            'computation_phase':
+                                        },
+                                        'cache': {
+                                            'covariates': ,
+                                            'dependents': ,
+                                            'lambda':
+                                        }
+                                    }
+
+    Comments:
+        Step 1 : Generate the local beta_vector
+        Step 2 : Generate the local fit statistics
+                    r^2 : goodness of fit/coefficient of determination
+                          Given as 1 - (SSE/SST)
+                          where  SSE = Sum Squared of Errors
+                                 SST = Total Sum of Squares
+                    t   : t-statistic is the coefficient divided by
+                          its standard error.
+                          Given as beta/std.err(beta)
+                    p   : two-tailed p-value (The p-value is the probability of
+                          seeing a result as extreme as the one you are
+                          getting (a t value as large as yours)
+                          in a collection of random data in which
+                          the variable had no effect.)
+        Step 3 : Compute mean_y_local and length of target values
     """
     input_list = args['input']
     X = input_list['covariates']
@@ -63,40 +84,69 @@ def local_1(args, computation_phase):
     r_squared = reg.r_square(biased_X, y, beta_vector)
     ts_beta = reg.t_value(biased_X, y, beta_vector)
     dof = len(y) - len(beta_vector)
-    ps_beta = reg.t_to_p(dof, ts_beta)
+    ps_beta = reg.t_to_p(ts_beta, dof)
 
-    computation_output = json.dumps(
-            {'output': {'beta_vector_local': beta_vector.tolist(),
-                        'r_2_local': r_squared,
-                        'ts_local': ts_beta.tolist(),
-                        'ps_local': ps_beta,
-                        'mean_y_local': np.mean(y),
-                        'count_local': len(y),
-                        'computation_phase': computation_phase
-                        },
-             'cache': {'covariates': X,
-                       'dependents': y,
-                       'lambda': lamb
-                       }
-             },
-            sort_keys=True,
-            indent=4,
-            separators=(',', ': ')
-            )
+    computation_output_dict = {
+        'output': {
+            'beta_vector_local': beta_vector.tolist(),
+            'r_2_local': r_squared,
+            'ts_local': ts_beta.tolist(),
+            'ps_local': ps_beta,
+            'mean_y_local': np.mean(y),
+            'count_local': len(y),
+            'computation_phase': computation_phase
+        },
+        'cache': {
+            'covariates': X,
+            'dependents': y,
+            'lambda': lamb
+        }
+    }
 
-    return computation_output
+    return json.dumps(
+        computation_output_dict,
+        sort_keys=True,
+        indent=4,
+        separators=(',', ': '))
 
 
 def local_2(args, computation_phase):
-    """
+    """Calculates the SSE_local, SST_local and varX_matrix_local
+
     Args:
-        args (dictionary)       :
-        computation_phase ()    :
+        args (dictionary): {
+                                'cache': {
+                                    'avg_beta_vector': ,
+                                    'mean_y_global': ,
+                                    'dof_global': ,
+                                    'dof_local': ,
+                                    'beta_vector_local': ,
+                                    'r_2_local': ,
+                                    'ts_local': ,
+                                    'ps_local':
+                                },
+                                'output': {
+                                    'avg_beta_vector': ,
+                                    'mean_y_global': ,
+                                    'computation_phase':
+                                }
+                            }
+        computation_phase (string): A field specifying which part
+                                    (local/remote) of the decentralized
+                                    computation has been performed last
+                                    In this case, it has to be remote_1
 
     Returns:
-        computation_output      : json dump
+        computation_output (json): {
+                                        'output': {
+                                            'SSE_local': ,
+                                            'SST_local': ,
+                                            'varX_matrix_local': ,
+                                            'computation_phase':
+                                        }
+                                    }
 
-    Algorithm:
+    Comments:
         After receiving  the mean_y_global, calculate the SSE_local,
         SST_local and varX_matrix_local
     """
@@ -114,23 +164,26 @@ def local_2(args, computation_phase):
     SST_local = np.sum(np.square(y - mean_y_global))
     varX_matrix_local = np.dot(biased_X.T, biased_X)
 
-    computation_output = json.dumps({'output':
-                                    {'SSE_local': SSE_local,
-                                     'SST_local': SST_local,
-                                     'varX_matrix_local': varX_matrix_local,
-                                     'computation_phase': computation_phase}},
-                                    sort_keys=True,
-                                    indent=4,
-                                    separators=(',', ': '))
-    return computation_output
+    computation_output_dict = {
+        'output': {
+            'SSE_local': SSE_local,
+            'SST_local': SST_local,
+            'varX_matrix_local': varX_matrix_local,
+            'computation_phase': computation_phase
+        }
+    }
+
+    return json.dumps(
+        computation_output_dict,
+        sort_keys=True,
+        indent=4,
+        separators=(',', ': '))
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-            description='''read in coinstac args for
-                            local computation'''
-                            )
-    parser.add_argument('--run', type=json.loads,  help='grab coinstac args')
+    parser = argparse.ArgumentParser(description='''read in coinstac args for
+                            local computation''')
+    parser.add_argument('--run', type=json.loads, help='grab coinstac args')
     args = parser.parse_args()
     input_list = args.run['input']
 
